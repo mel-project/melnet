@@ -13,11 +13,12 @@ mod endpoint;
 mod routingtable;
 use derivative::*;
 pub use endpoint::*;
-use log::{debug, trace};
+use once_cell::sync::Lazy;
 use routingtable::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::sync::Arc;
 use std::{collections::HashMap, net::SocketAddr};
+use tap::TapFallible;
 mod reqs;
 use async_net::{TcpListener, TcpStream};
 mod common;
@@ -28,7 +29,8 @@ use rand::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use reqs::*;
-use smol::{channel::Receiver, Timer};
+use smol::prelude::*;
+use smol::Timer;
 use smol_timeout::TimeoutExt;
 use std::time::Duration;
 
@@ -48,86 +50,104 @@ impl NetState {
         let mut this = self.clone();
         this.setup_routing();
         // Spam neighbors with random routes
-        // INTENTIONALLY not detach so that it cancels automatically
-        let _spammer = {
-            let state = self.clone();
-            smolscale::spawn(async move {
-                let mut rng = rand::rngs::OsRng {};
-                loop {
-                    let tmr = Timer::after(Duration::from_secs_f32(0.2));
-                    let routes = state.routes.read().to_vec();
-                    if !routes.is_empty() {
-                        let (rand_neigh, _) = routes[rng.gen::<usize>() % routes.len()];
-                        let (rand_route, _) = routes[rng.gen::<usize>() % routes.len()];
-                        let to_wait = crate::request::<RoutingRequest, String>(
-                            rand_neigh,
-                            &state.network_name,
-                            "new_addr",
-                            RoutingRequest {
-                                proto: String::from("tcp"),
-                                addr: rand_route.to_string(),
-                            },
-                        )
-                        .await;
-                        match to_wait {
-                            Ok(output) => {
-                                trace!(
-                                    "addrspam sent {:?} to {:?}, output {:?}",
-                                    rand_route,
-                                    rand_neigh,
-                                    output
-                                );
-                                tmr.await;
-                            }
-                            Err(_) => {
-                                trace!("addrspam timer expired on {:?}, switching...", rand_neigh)
-                            }
-                        }
-                    } else {
-                        debug!("addrspam no neighbors, sleeping...");
-                        tmr.await;
-                    }
-                }
-            })
-        };
+        let spammer = self.new_addr_spam().race(self.get_routes_spam());
 
         // Max number of connections
-        const MAX_CONNECTIONS: usize = 256;
-        let conn_semaphore = smol::lock::Semaphore::new(MAX_CONNECTIONS);
-        let (conn_abort_send, conn_abort_recv) = smol::channel::unbounded::<()>();
+        spammer
+            .race(async move {
+                static CONN_SEMAPHORE: Lazy<smol::lock::Semaphore> =
+                    Lazy::new(|| smol::lock::Semaphore::new(512));
+                loop {
+                    let sem_guard = CONN_SEMAPHORE.acquire().await;
+                    let (conn, addr) = listener.accept().await.unwrap();
+                    let self_copy = self.clone();
+                    // spawn a task, moving the sem_guard inside
+                    smolscale::spawn(async move {
+                        if let Some(Err(e)) = self_copy
+                            .server_handle(conn)
+                            .timeout(Duration::from_secs(10))
+                            .await
+                        {
+                            log::debug!("{} terminating on error: {:?}", addr, e)
+                        }
+                        drop(sem_guard);
+                    })
+                    .detach();
+                }
+            })
+            .await
+    }
+
+    /// Random spammer
+    async fn new_addr_spam(&self) {
+        let mut rng = rand::rngs::OsRng {};
+        let mut tmr = Timer::interval(Duration::from_secs(5));
         loop {
-            let (conn, addr) = listener.accept().await.unwrap();
-            let self_copy = self.clone();
-            if let Some(_guard) = conn_semaphore.try_acquire() {
-                let conn_abort_recv = conn_abort_recv.clone();
+            tmr.next().await;
+            let routes = self.routes.read().to_vec();
+            if !routes.is_empty() {
+                let (rand_neigh, _) = routes[rng.gen::<usize>() % routes.len()];
+                let (rand_route, _) = routes[rng.gen::<usize>() % routes.len()];
+                let network_name = self.network_name.clone();
                 smolscale::spawn(async move {
-                    if let Some(Err(e)) = self_copy
-                        .server_handle(conn, conn_abort_recv)
-                        .timeout(Duration::from_secs(120))
-                        .await
-                    {
-                        log::debug!("{} terminating on error: {:?}", addr, e)
-                    }
+                    let _ = crate::request::<RoutingRequest, String>(
+                        rand_neigh,
+                        &network_name,
+                        "new_addr",
+                        RoutingRequest {
+                            proto: String::from("tcp"),
+                            addr: rand_route.to_string(),
+                        },
+                    )
+                    .await
+                    .tap_err(|err| log::debug!("addrspam failed to {} ({:?})", rand_neigh, err));
                 })
                 .detach();
-            } else {
-                log::warn!("too many connections, rejecting an accepted connection and aborting an existing one!");
-                conn_abort_send.try_send(()).unwrap();
             }
         }
     }
 
-    async fn server_handle(
-        &self,
-        mut conn: TcpStream,
-        conn_abort_recv: Receiver<()>,
-    ) -> anyhow::Result<()> {
+    /// Get-routes spam
+    async fn get_routes_spam(&self) {
+        let mut tmr = Timer::interval(Duration::from_secs(30));
+        loop {
+            tmr.next().await;
+            if let Some(route) = self.routes().get(0).copied() {
+                let network_name = self.network_name.clone();
+                let state = self.clone();
+                smolscale::spawn(async move {
+                    let resp = crate::request::<(), Vec<SocketAddr>>(
+                        route,
+                        &network_name,
+                        "get_routes",
+                        (),
+                    )
+                    .await
+                    .tap_err(|err| log::debug!("could not get routes from {}: {:?}", route, err))?;
+                    for new_route in resp {
+                        crate::request::<_, u64>(new_route, &network_name, "ping", 10)
+                            .await
+                            .tap_err(|err| {
+                                log::warn!(
+                                    "route {} from {} was unpingable ({:?})!",
+                                    new_route,
+                                    route,
+                                    err
+                                )
+                            })?;
+                        state.add_route(new_route)
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .detach();
+            }
+        }
+    }
+
+    async fn server_handle(&self, mut conn: TcpStream) -> anyhow::Result<()> {
         conn.set_nodelay(true)?;
         loop {
             self.server_handle_one(&mut conn).await?;
-            if conn_abort_recv.try_recv().is_ok() {
-                anyhow::bail!("aborting on too-many-connections signal")
-            }
         }
     }
 
@@ -146,7 +166,7 @@ impl NetState {
         if cmd.netname != self.network_name {
             return Err(anyhow::anyhow!("bad"));
         }
-        trace!("got command {:?} from {:?}", cmd, conn.peer_addr());
+        log::debug!("got command {:?} from {:?}", cmd, conn.peer_addr());
         // respond to command
         let response_fut = {
             let responder = self.verbs.lock().get(&cmd.verb).cloned();
@@ -196,7 +216,11 @@ impl NetState {
                 )
                 .await?
             }
-            err => anyhow::bail!("bad error created by responder: {:?}", err),
+            err => anyhow::bail!(
+                "bad error created by responder at verb {}: {:?}",
+                cmd.verb,
+                err
+            ),
         }
         Ok(())
     }
@@ -208,6 +232,7 @@ impl NetState {
             let body = ping.body;
             ping.response.send(Ok(body))
         });
+        // new_addr adds a new address
         self.listen("new_addr", |request: Request<RoutingRequest, _>| {
             let rr = request.body.clone();
             let state = request.state.clone();
@@ -221,25 +246,32 @@ impl NetState {
             }
             // move into a task now
             smolscale::spawn(async move {
-                let resp: u64 = crate::request(
-                    *smol::net::resolve(&rr.addr).await.ok()?.first()?,
-                    &state.network_name.to_owned(),
-                    "ping",
-                    814u64,
-                )
-                .await
-                .ok()?;
+                let their_addr = *smol::net::resolve(&rr.addr).await.ok()?.first()?;
+                let resp: u64 =
+                    crate::request(their_addr, &state.network_name.to_owned(), "ping", 814u64)
+                        .await
+                        .tap_err(|err| log::warn!("error while pinging {}: {:?}", their_addr, err))
+                        .ok()?;
                 if resp != 814 {
-                    debug!("new_addr bad ping {:?} {:?}", rr.addr, resp);
+                    log::debug!("new_addr bad ping {:?} {:?}", rr.addr, resp);
                     request.response.send(Err(unreach()));
                 } else {
                     state.add_route(*smol::net::resolve(&rr.addr).await.ok()?.first()?);
+                    log::debug!(
+                        "ADDED ROUTE {}; NOW {} ROUTES",
+                        their_addr,
+                        state.routes().len()
+                    );
                     request.response.send(Ok("".to_string()));
                 }
                 Some(())
             })
             .detach();
         });
+        // get_routes dumps out a slice of known routes
+        self.listen("get_routes", |request: Request<(), _>| {
+            request.response.send(Ok(request.state.routes()))
+        })
     }
 
     /// Registers a verb.

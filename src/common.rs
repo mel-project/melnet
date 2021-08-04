@@ -24,7 +24,7 @@ pub async fn write_len_bts<T: AsyncWrite + Unpin>(conn: &mut T, rr: &[u8]) -> Re
     conn.write_all(&(rr.len() as u32).to_be_bytes())
         .await
         .map_err(MelnetError::Network)?;
-    conn.write_all(&rr).await.map_err(MelnetError::Network)?;
+    conn.write_all(rr).await.map_err(MelnetError::Network)?;
     conn.flush().await.map_err(MelnetError::Network)?;
     Ok(())
 }

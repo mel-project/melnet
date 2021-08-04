@@ -29,7 +29,7 @@ pub(crate) fn responder_to_closure<
     responder: impl Endpoint<Req, Resp> + 'static + Send,
 ) -> BoxedResponder {
     let clos = move |bts: &[u8]| {
-        let decoded: Result<Req, _> = stdcode::deserialize(&bts);
+        let decoded: Result<Req, _> = stdcode::deserialize(bts);
         match decoded {
             Ok(decoded) => {
                 let (respond, recv_respond) = smol::channel::bounded(1);

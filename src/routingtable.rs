@@ -1,7 +1,6 @@
-use log::trace;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[derive(Debug, Default)]
 pub struct RoutingTable {
@@ -18,16 +17,8 @@ impl RoutingTable {
 
     /// Cleans up really old routes.
     fn clean_up(&mut self) {
-        let to_del: Vec<_> = self
-            .addr_last_seen
-            .clone()
-            .into_iter()
-            .filter(|(_, start)| *start < Instant::now() - Duration::from_secs(600))
-            .collect();
-        for (del, inst) in to_del {
-            trace!("removing {:?}:{:?}", del, inst);
-            self.addr_last_seen.remove(&del);
-        }
+        self.addr_last_seen
+            .retain(|_, last_seen| last_seen.elapsed().as_secs() < 120);
     }
 
     /// Gets all the routes out
