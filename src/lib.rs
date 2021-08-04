@@ -11,6 +11,7 @@
 mod client;
 mod endpoint;
 mod routingtable;
+use anyhow::Context;
 use derivative::*;
 pub use endpoint::*;
 use once_cell::sync::Lazy;
@@ -81,7 +82,7 @@ impl NetState {
     /// Random spammer
     async fn new_addr_spam(&self) {
         let mut rng = rand::rngs::OsRng {};
-        let mut tmr = Timer::interval(Duration::from_secs(5));
+        let mut tmr = Timer::interval(Duration::from_secs(30));
         loop {
             tmr.next().await;
             let routes = self.routes.read().to_vec();
@@ -122,8 +123,12 @@ impl NetState {
                         "get_routes",
                         (),
                     )
+                    .timeout(Duration::from_secs(10))
                     .await
-                    .tap_err(|err| log::debug!("could not get routes from {}: {:?}", route, err))?;
+                    .context("timeout")
+                    .tap_err(|err| {
+                        log::debug!("could not get routes from {}: {:?}", route, err)
+                    })??;
                     log::debug!("{} routes from {}", resp.len(), route);
                     for new_route in resp {
                         crate::request::<_, u64>(new_route, &network_name, "ping", 10)
