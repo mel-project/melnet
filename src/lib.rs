@@ -124,6 +124,7 @@ impl NetState {
                     )
                     .await
                     .tap_err(|err| log::debug!("could not get routes from {}: {:?}", route, err))?;
+                    log::debug!("{} routes from {}", resp.len(), route);
                     for new_route in resp {
                         crate::request::<_, u64>(new_route, &network_name, "ping", 10)
                             .await
@@ -166,7 +167,7 @@ impl NetState {
         if cmd.netname != self.network_name {
             return Err(anyhow::anyhow!("bad"));
         }
-        log::debug!("got command {:?} from {:?}", cmd, conn.peer_addr());
+        log::trace!("got command {:?} from {:?}", cmd, conn.peer_addr());
         // respond to command
         let response_fut = {
             let responder = self.verbs.lock().get(&cmd.verb).cloned();
@@ -258,7 +259,7 @@ impl NetState {
                 } else {
                     state.add_route(*smol::net::resolve(&rr.addr).await.ok()?.first()?);
                     log::debug!(
-                        "ADDED ROUTE {}; NOW {} ROUTES",
+                        "received route {}; now {} routes",
                         their_addr,
                         state.routes().len()
                     );
