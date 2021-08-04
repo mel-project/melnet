@@ -262,12 +262,16 @@ impl NetState {
                     log::debug!("new_addr bad ping {:?} {:?}", rr.addr, resp);
                     request.response.send(Err(unreach()));
                 } else {
+                    let prev_routes = self.routes().len();
                     state.add_route(*smol::net::resolve(&rr.addr).await.ok()?.first()?);
-                    log::debug!(
-                        "received route {}; now {} routes",
-                        their_addr,
-                        state.routes().len()
-                    );
+                    let new_routes = self.routes().len();
+                    if new_routes > prev_routes {
+                        log::debug!(
+                            "received route {}; now {} routes",
+                            their_addr,
+                            state.routes().len()
+                        );
+                    }
                     request.response.send(Ok("".to_string()));
                 }
                 Some(())
