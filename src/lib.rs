@@ -112,7 +112,7 @@ impl NetState {
     async fn get_routes_spam(&self) {
         let mut tmr = Timer::interval(Duration::from_secs(30));
         loop {
-            tmr.next().await;
+            log::warn!("GET_ROUTES_SPAM");
             if let Some(route) = self.routes().get(0).copied() {
                 let network_name = self.network_name.clone();
                 let state = self.clone();
@@ -131,22 +131,34 @@ impl NetState {
                     })??;
                     log::debug!("{} routes from {}", resp.len(), route);
                     for new_route in resp {
-                        crate::request::<_, u64>(new_route, &network_name, "ping", 10)
-                            .await
-                            .tap_err(|err| {
-                                log::warn!(
-                                    "route {} from {} was unpingable ({:?})!",
-                                    new_route,
-                                    route,
-                                    err
-                                )
-                            })?;
-                        state.add_route(new_route)
+                        log::debug!("testing {}", new_route);
+                        let state = state.clone();
+                        let network_name = network_name.clone();
+                        smolscale::spawn(async move {
+                            crate::request::<_, u64>(new_route, &network_name, "ping", 10)
+                                .timeout(Duration::from_secs(10))
+                                .await
+                                .context("timeout")
+                                .tap_err(|err| {
+                                    log::warn!(
+                                        "route {} from {} was unpingable ({:?})!",
+                                        new_route,
+                                        route,
+                                        err
+                                    )
+                                })??;
+                            state.add_route(new_route);
+                            Ok::<_, anyhow::Error>(())
+                        })
+                        .detach();
                     }
                     Ok::<_, anyhow::Error>(())
                 })
                 .detach();
+            } else {
+                log::warn!("EMPTY ROUTES");
             }
+            tmr.next().await;
         }
     }
 

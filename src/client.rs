@@ -18,7 +18,7 @@ lazy_static! {
 }
 
 /// Does a melnet request to any given endpoint, using the global client.
-pub async fn request<TInput: Serialize, TOutput: DeserializeOwned + std::fmt::Debug>(
+pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std::fmt::Debug>(
     addr: SocketAddr,
     netname: &str,
     verb: &str,
@@ -72,7 +72,25 @@ impl Client {
             .unwrap();
     }
     /// Does a melnet request to any given endpoint.
-    pub async fn request<TInput: Serialize, TOutput: DeserializeOwned + std::fmt::Debug>(
+    pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std::fmt::Debug>(
+        &self,
+        addr: SocketAddr,
+        netname: &str,
+        verb: &str,
+        req: TInput,
+    ) -> Result<TOutput> {
+        for count in 0..20 {
+            match self.request_inner(addr, netname, verb, req.clone()).await {
+                Err(MelnetError::Network(_)) => {
+                    smol::Timer::after(Duration::from_secs_f64(1.2f64.powi(count))).await;
+                }
+                x => return x,
+            }
+        }
+        self.request_inner(addr, netname, verb, req).await
+    }
+
+    async fn request_inner<TInput: Serialize, TOutput: DeserializeOwned + std::fmt::Debug>(
         &self,
         addr: SocketAddr,
         netname: &str,
