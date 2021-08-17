@@ -112,12 +112,11 @@ impl NetState {
     async fn get_routes_spam(&self) {
         let mut tmr = Timer::interval(Duration::from_secs(30));
         loop {
-            log::warn!("GET_ROUTES_SPAM");
             if let Some(route) = self.routes().get(0).copied() {
                 let network_name = self.network_name.clone();
                 let state = self.clone();
                 smolscale::spawn(async move {
-                    let resp = crate::request::<(), Vec<SocketAddr>>(
+                    let mut resp = crate::request::<(), Vec<SocketAddr>>(
                         route,
                         &network_name,
                         "get_routes",
@@ -130,6 +129,7 @@ impl NetState {
                         log::debug!("could not get routes from {}: {:?}", route, err)
                     })??;
                     log::debug!("{} routes from {}", resp.len(), route);
+                    resp.truncate(8);
                     for new_route in resp {
                         log::debug!("testing {}", new_route);
                         let state = state.clone();
@@ -155,8 +155,6 @@ impl NetState {
                     Ok::<_, anyhow::Error>(())
                 })
                 .detach();
-            } else {
-                log::warn!("EMPTY ROUTES");
             }
             tmr.next().await;
         }
