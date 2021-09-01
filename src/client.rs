@@ -1,15 +1,9 @@
 use crate::reqs::*;
 use crate::{common::*, pool_manager::TcpPoolManager};
-use by_address::ByAddress;
 use deadpool::managed::{Object, Pool, PoolError};
 use lazy_static::lazy_static;
-use log::trace;
-use min_max_heap::MinMaxHeap;
 use parking_lot::RwLock;
 use serde::{de::DeserializeOwned, Serialize};
-use smol::{channel::Receiver, prelude::*};
-use smol::{channel::Sender, net::TcpStream};
-use smol::{lock::Semaphore, Timer};
 use std::collections::HashMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -42,7 +36,7 @@ impl Client {
             .pool
             .write()
             .entry(addr)
-            .or_insert_with(|| Pool::new(TcpPoolManager(addr), 3))
+            .or_insert_with(|| Pool::new(TcpPoolManager(addr), 16))
             .clone();
         let conn = existing.get().await.map_err(|err| match err {
             PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
@@ -99,10 +93,12 @@ impl Client {
                 payload: stdcode::serialize(&req).unwrap(),
             })
             .unwrap();
-            write_len_bts(conn.as_mut(), &rr).await?;
+            write_len_bts(conn.as_mut().as_mut(), &rr).await?;
             // read the response length
-            let response: RawResponse = stdcode::deserialize(&read_len_bts(conn.as_mut()).await?)
-                .map_err(|e| {
+            let response: RawResponse = stdcode::deserialize(
+                &read_len_bts(conn.as_mut().as_mut()).await?,
+            )
+            .map_err(|e| {
                 MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             })?;
             let response = match response.kind.as_ref() {
