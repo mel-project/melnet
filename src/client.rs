@@ -1,6 +1,7 @@
-use crate::common::*;
 use crate::reqs::*;
+use crate::{common::*, pool_manager::TcpPoolManager};
 use by_address::ByAddress;
+use deadpool::managed::{Object, Pool, PoolError};
 use lazy_static::lazy_static;
 use log::trace;
 use min_max_heap::MinMaxHeap;
@@ -28,48 +29,28 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
 }
 
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Client {
-    pool: RwLock<HashMap<SocketAddr, SingleHost>>,
+    pool: RwLock<HashMap<SocketAddr, deadpool::managed::Pool<TcpPoolManager>>>,
 }
 
 impl Client {
     /// Connects to a given address, which may return either a new connection or an existing one.
-    async fn connect(&self, addr: impl ToSocketAddrs) -> std::io::Result<TcpStream> {
+    async fn connect(&self, addr: impl ToSocketAddrs) -> std::io::Result<Object<TcpPoolManager>> {
         let addr = addr.to_socket_addrs()?.next().unwrap();
-        let existing = {
-            let pool = self.pool.read();
-            let existing = pool.get(&addr);
-            existing.cloned()
-        };
-        match existing {
-            Some(existing) => {
-                let existing = existing.clone();
-                match existing.get_conn().await {
-                    Some(conn) => Ok(conn),
-                    None => {
-                        trace!("connect({:?}) -> fresh", addr);
-                        TcpStream::connect(addr).await
-                    }
-                }
-            }
-            None => {
-                // create a new connection
-                trace!("connect({:?}) -> fresh", addr);
-                TcpStream::connect(addr).await
-            }
-        }
-    }
-    /// Takes ownership of and returns a given TCP connection back to the pool.
-    fn recycle(&self, conn: TcpStream) {
-        let addr = conn.peer_addr().unwrap();
-        self.pool
+        let existing = self
+            .pool
             .write()
             .entry(addr)
-            .or_insert_with(SingleHost::new)
-            .send_insertion
-            .try_send(conn)
-            .unwrap();
+            .or_insert_with(|| Pool::new(TcpPoolManager(addr), 16))
+            .clone();
+        let conn = existing.get().await.map_err(|err| match err {
+            PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
+            PoolError::Closed => panic!("closed"),
+            PoolError::NoRuntimeSpecified => panic!("what"),
+            PoolError::Backend(err) => err,
+        })?;
+        Ok(conn)
     }
     /// Does a melnet request to any given endpoint.
     pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std::fmt::Debug>(
@@ -79,9 +60,15 @@ impl Client {
         verb: &str,
         req: TInput,
     ) -> Result<TOutput> {
-        for count in 0..20 {
+        for count in 0..5 {
             match self.request_inner(addr, netname, verb, req.clone()).await {
-                Err(MelnetError::Network(_)) => {
+                Err(MelnetError::Network(err)) => {
+                    log::warn!(
+                        "retrying request {} to {} on transient network error {:?}",
+                        verb,
+                        addr,
+                        err
+                    );
                     smol::Timer::after(Duration::from_secs_f64(1.2f64.powi(count))).await;
                 }
                 x => return x,
@@ -97,123 +84,49 @@ impl Client {
         verb: &str,
         req: TInput,
     ) -> Result<TOutput> {
-        // Semaphore
-        static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
-        let _guard = GLOBAL_LIMIT.acquire().await;
+        // // Semaphore
+        // static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
+        // let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection
         let mut conn = self.connect(addr).await.map_err(MelnetError::Network)?;
-        conn.set_nodelay(true).unwrap();
-        // send a request
-        let rr = stdcode::serialize(&RawRequest {
-            proto_ver: PROTO_VER,
-            netname: netname.to_owned(),
-            verb: verb.to_owned(),
-            payload: stdcode::serialize(&req).unwrap(),
-        })
-        .unwrap();
-        write_len_bts(&mut conn, &rr).await?;
-        // read the response length
-        let response: RawResponse =
-            stdcode::deserialize(&read_len_bts(&mut conn).await?).map_err(|e| {
+        let res = async {
+            // send a request
+            let rr = stdcode::serialize(&RawRequest {
+                proto_ver: PROTO_VER,
+                netname: netname.to_owned(),
+                verb: verb.to_owned(),
+                payload: stdcode::serialize(&req).unwrap(),
+            })
+            .unwrap();
+            write_len_bts(conn.as_mut(), &rr).await?;
+            // read the response length
+            let response: RawResponse = stdcode::deserialize(&read_len_bts(conn.as_mut()).await?)
+                .map_err(|e| {
                 MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
             })?;
-        let response = match response.kind.as_ref() {
-            "Ok" => stdcode::deserialize::<TOutput>(&response.body)
-                .map_err(|_| MelnetError::Custom("stdcode error".to_owned()))?,
-            "NoVerb" => return Err(MelnetError::VerbNotFound),
-            _ => {
-                return Err(MelnetError::Custom(
-                    String::from_utf8_lossy(&response.body).to_string(),
-                ))
-            }
-        };
-        // put the connection back
-        self.recycle(conn);
-        let elapsed = start.elapsed();
-        if elapsed.as_secs_f64() > 3.0 {
-            log::warn!("melnet req to {} took {:?}", addr, elapsed)
-        }
-        Ok(response)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SingleHost {
-    send_insertion: Sender<TcpStream>,
-    send_request: Sender<Sender<Option<TcpStream>>>,
-}
-
-impl SingleHost {
-    fn new() -> Self {
-        let (send_insertion, recv_insertion) = smol::channel::unbounded();
-        let (send_request, recv_request) = smol::channel::unbounded();
-        smolscale::spawn(async {
-            singlehost_monitor(recv_insertion, recv_request).await;
-        })
-        .detach();
-        SingleHost {
-            send_insertion,
-            send_request,
-        }
-    }
-    async fn get_conn(&self) -> Option<TcpStream> {
-        let (send, recv) = smol::channel::unbounded();
-        self.send_request.send(send).await.unwrap();
-        recv.recv().await.unwrap()
-    }
-}
-
-async fn singlehost_monitor(
-    recv_insertion: Receiver<TcpStream>,
-    recv_request: Receiver<Sender<Option<TcpStream>>>,
-) -> Option<()> {
-    let mut heap: MinMaxHeap<(Instant, ByAddress<Box<TcpStream>>)> = MinMaxHeap::new();
-
-    enum Evt {
-        Insertion(TcpStream),
-        Request(Sender<Option<TcpStream>>),
-        Timeout,
-    }
-
-    loop {
-        let heap_overflow = heap.len() > 256;
-        let deadline = async {
-            if heap_overflow {
-            } else if let Some((min, _)) = heap.peek_min() {
-                Timer::at(*min).await;
-            } else {
-                smol::future::pending().await
+            let response = match response.kind.as_ref() {
+                "Ok" => stdcode::deserialize::<TOutput>(&response.body)
+                    .map_err(|_| MelnetError::Custom("stdcode error".to_owned()))?,
+                "NoVerb" => return Err(MelnetError::VerbNotFound),
+                _ => {
+                    return Err(MelnetError::Custom(
+                        String::from_utf8_lossy(&response.body).to_string(),
+                    ))
+                }
             };
+            let elapsed = start.elapsed();
+            if elapsed.as_secs_f64() > 3.0 {
+                log::warn!("melnet req to {} took {:?}", addr, elapsed)
+            }
+            Ok::<_, crate::MelnetError>(response)
         };
-
-        let evt: Evt = async {
-            deadline.await;
-            Some(Evt::Timeout)
-        }
-        .or(async { Some(Evt::Insertion(recv_insertion.recv().await.ok()?)) })
-        .or(async { Some(Evt::Request(recv_request.recv().await.ok()?)) })
-        .await?;
-
-        match evt {
-            Evt::Insertion(insertion) => {
-                let inserted_deadline = Instant::now() + Duration::from_secs(60);
-                heap.push((inserted_deadline, ByAddress(Box::new(insertion))));
+        match res.await {
+            Err(err) => {
+                Object::take(conn);
+                Err(err)
             }
-            Evt::Request(send_response) => {
-                let _ = send_response
-                    .send(match heap.pop_max() {
-                        Some(max) => {
-                            let ByAddress(bx) = max.1;
-                            Some(*bx)
-                        }
-                        None => None,
-                    })
-                    .await;
-            }
-            Evt::Timeout => {
-                heap.pop_min();
-            }
+            x => x,
         }
     }
 }

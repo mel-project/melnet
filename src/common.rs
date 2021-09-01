@@ -20,7 +20,7 @@ pub enum MelnetError {
 pub const PROTO_VER: u8 = 1;
 pub const MAX_MSG_SIZE: u32 = 10 * 1024 * 1024;
 
-pub async fn write_len_bts<T: AsyncWrite + Unpin>(conn: &mut T, rr: &[u8]) -> Result<()> {
+pub async fn write_len_bts<T: AsyncWrite + Unpin>(mut conn: T, rr: &[u8]) -> Result<()> {
     conn.write_all(&(rr.len() as u32).to_be_bytes())
         .await
         .map_err(MelnetError::Network)?;
@@ -29,7 +29,7 @@ pub async fn write_len_bts<T: AsyncWrite + Unpin>(conn: &mut T, rr: &[u8]) -> Re
     Ok(())
 }
 
-pub async fn read_len_bts<T: AsyncRead + Unpin>(conn: &mut T) -> Result<Vec<u8>> {
+pub async fn read_len_bts<T: AsyncRead + Unpin>(mut conn: T) -> Result<Vec<u8>> {
     // read the response length
     let mut response_len = [0; 4];
     conn.read_exact(&mut response_len)

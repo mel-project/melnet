@@ -10,6 +10,7 @@
 
 mod client;
 mod endpoint;
+mod pool_manager;
 mod routingtable;
 use anyhow::Context;
 use derivative::*;
@@ -163,13 +164,17 @@ impl NetState {
     async fn server_handle(&self, mut conn: TcpStream) -> anyhow::Result<()> {
         conn.set_nodelay(true)?;
         loop {
-            self.server_handle_one(&mut conn).await?;
+            if let Err(err) = self.server_handle_one(&mut conn).await {
+                log::error!("bad handler failed: {:?}", err);
+                break;
+            }
         }
+        Ok(())
     }
 
     async fn server_handle_one(&self, conn: &mut TcpStream) -> anyhow::Result<()> {
         // read command
-        let cmd: RawRequest = stdcode::deserialize(&read_len_bts(conn).await?)?;
+        let cmd: RawRequest = stdcode::deserialize(&read_len_bts(conn.clone()).await?)?;
         if cmd.proto_ver != 1 {
             let err = stdcode::serialize(&RawResponse {
                 kind: "Err".to_owned(),
