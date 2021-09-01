@@ -42,7 +42,7 @@ impl Client {
             .pool
             .write()
             .entry(addr)
-            .or_insert_with(|| Pool::new(TcpPoolManager(addr), 16))
+            .or_insert_with(|| Pool::new(TcpPoolManager(addr), 3))
             .clone();
         let conn = existing.get().await.map_err(|err| match err {
             PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
@@ -69,7 +69,7 @@ impl Client {
                         addr,
                         err
                     );
-                    smol::Timer::after(Duration::from_secs_f64(1.2f64.powi(count))).await;
+                    smol::Timer::after(Duration::from_secs_f64(0.1 * 2.0f64.powi(count))).await;
                 }
                 x => return x,
             }
