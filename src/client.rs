@@ -57,7 +57,7 @@ impl Client {
         for count in 0..5 {
             match self.request_inner(addr, netname, verb, req.clone()).await {
                 Err(MelnetError::Network(err)) => {
-                    log::warn!(
+                    log::debug!(
                         "retrying request {} to {} on transient network error {:?}",
                         verb,
                         addr,
