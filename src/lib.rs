@@ -111,7 +111,7 @@ impl NetState {
 
     /// Get-routes spam
     async fn get_routes_spam(&self) {
-        let mut tmr = Timer::interval(Duration::from_secs(30));
+        let mut tmr = Timer::interval(Duration::from_secs(10));
         loop {
             if let Some(route) = self.routes().get(0).copied() {
                 let network_name = self.network_name.clone();
@@ -130,7 +130,6 @@ impl NetState {
                         log::debug!("could not get routes from {}: {:?}", route, err)
                     })??;
                     log::debug!("{} routes from {}", resp.len(), route);
-                    resp.truncate(8);
                     for new_route in resp {
                         log::debug!("testing {}", new_route);
                         let state = state.clone();

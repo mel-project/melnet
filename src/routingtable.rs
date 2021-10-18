@@ -18,7 +18,7 @@ impl RoutingTable {
     /// Cleans up really old routes.
     fn clean_up(&mut self) {
         self.addr_last_seen
-            .retain(|_, last_seen| last_seen.elapsed().as_secs() < 120);
+            .retain(|_, last_seen| last_seen.elapsed().as_secs() < 3600);
     }
 
     /// Gets all the routes out
