@@ -41,7 +41,7 @@ impl From<TcpStream> for TempTcpStream {
     fn from(t: TcpStream) -> Self {
         Self {
             tcp: t,
-            deadline: Instant::now() + Duration::from_secs(5),
+            deadline: Instant::now() + Duration::from_secs(60),
         }
     }
 }

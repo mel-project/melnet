@@ -34,7 +34,7 @@ use reqs::*;
 use smol::prelude::*;
 use smol::Timer;
 use smol_timeout::TimeoutExt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Derivative, Clone, Default)]
 #[derivative(Debug)]
@@ -163,12 +163,8 @@ impl NetState {
     async fn server_handle(&self, mut conn: TcpStream) -> anyhow::Result<()> {
         conn.set_nodelay(true)?;
         loop {
-            if let Err(err) = self.server_handle_one(&mut conn).await {
-                log::error!("bad handler failed: {:?}", err);
-                break;
-            }
+            self.server_handle_one(&mut conn).await?;
         }
-        Ok(())
     }
 
     async fn server_handle_one(&self, conn: &mut TcpStream) -> anyhow::Result<()> {
@@ -236,11 +232,14 @@ impl NetState {
                 )
                 .await?
             }
-            err => anyhow::bail!(
-                "bad error created by responder at verb {}: {:?}",
-                cmd.verb,
-                err
-            ),
+            err => {
+                log::error!(
+                    "bad error created by responder at verb {}: {:?}",
+                    cmd.verb,
+                    err
+                );
+                anyhow::bail!("wtf")
+            }
         }
         Ok(())
     }
