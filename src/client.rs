@@ -1,10 +1,11 @@
 use crate::reqs::*;
 use crate::{common::*, pool_manager::TcpPoolManager};
+use dashmap::DashMap;
 use deadpool::managed::{Object, Pool, PoolError};
 use lazy_static::lazy_static;
-use parking_lot::RwLock;
+
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::HashMap;
+
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
@@ -25,7 +26,7 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
 #[derive(Default)]
 pub struct Client {
-    pool: RwLock<HashMap<SocketAddr, deadpool::managed::Pool<TcpPoolManager>>>,
+    pool: DashMap<SocketAddr, deadpool::managed::Pool<TcpPoolManager>>,
 }
 
 impl Client {
@@ -34,18 +35,26 @@ impl Client {
         let addr = addr.to_socket_addrs()?.next().unwrap();
         let existing = self
             .pool
-            .write()
             .entry(addr)
-            .or_insert_with(|| Pool::new(TcpPoolManager(addr), 16))
+            .or_insert_with(|| {
+                Pool::builder(TcpPoolManager(addr))
+                    .max_size(64)
+                    .build()
+                    .unwrap()
+            })
             .clone();
         let conn = existing.get().await.map_err(|err| match err {
             PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
             PoolError::Closed => panic!("closed"),
             PoolError::NoRuntimeSpecified => panic!("what"),
             PoolError::Backend(err) => err,
+            PoolError::PostCreateHook(_) => todo!(),
+            PoolError::PreRecycleHook(_) => todo!(),
+            PoolError::PostRecycleHook(_) => todo!(),
         })?;
         Ok(conn)
     }
+
     /// Does a melnet request to any given endpoint.
     pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std::fmt::Debug>(
         &self,

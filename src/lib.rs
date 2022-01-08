@@ -117,7 +117,7 @@ impl NetState {
                 let network_name = self.network_name.clone();
                 let state = self.clone();
                 smolscale::spawn(async move {
-                    let mut resp = crate::request::<(), Vec<SocketAddr>>(
+                    let resp: Vec<SocketAddr> = crate::request::<(), Vec<SocketAddr>>(
                         route,
                         &network_name,
                         "get_routes",
