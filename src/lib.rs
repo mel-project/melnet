@@ -67,7 +67,7 @@ impl NetState {
                     smolscale::spawn(async move {
                         if let Some(Err(e)) = self_copy
                             .server_handle(conn)
-                            .timeout(Duration::from_secs(10))
+                            .timeout(Duration::from_secs(120))
                             .await
                         {
                             log::debug!("{} terminating on error: {:?}", addr, e)
