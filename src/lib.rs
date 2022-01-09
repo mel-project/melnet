@@ -34,7 +34,7 @@ use reqs::*;
 use smol::prelude::*;
 use smol::Timer;
 use smol_timeout::TimeoutExt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Derivative, Clone, Default)]
 #[derivative(Debug)]

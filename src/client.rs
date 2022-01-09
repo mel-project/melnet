@@ -92,46 +92,48 @@ impl Client {
         // let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection
-        let mut conn = self.connect(addr).await.map_err(MelnetError::Network)?;
-        let res = async {
-            // send a request
-            let rr = stdcode::serialize(&RawRequest {
-                proto_ver: PROTO_VER,
-                netname: netname.to_owned(),
-                verb: verb.to_owned(),
-                payload: stdcode::serialize(&req).unwrap(),
-            })
-            .unwrap();
-            write_len_bts(conn.as_mut().as_mut(), &rr).await?;
-            // read the response length
-            let response: RawResponse = stdcode::deserialize(
-                &read_len_bts(conn.as_mut().as_mut()).await?,
-            )
-            .map_err(|e| {
-                MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            })?;
-            let response = match response.kind.as_ref() {
-                "Ok" => stdcode::deserialize::<TOutput>(&response.body)
-                    .map_err(|_| MelnetError::Custom("stdcode error".to_owned()))?,
-                "NoVerb" => return Err(MelnetError::VerbNotFound),
-                _ => {
-                    return Err(MelnetError::Custom(
-                        String::from_utf8_lossy(&response.body).to_string(),
-                    ))
+        loop {
+            let mut conn = self.connect(addr).await.map_err(MelnetError::Network)?;
+            if conn.expired() {
+                continue;
+            }
+            let res = async {
+                // send a request
+                let rr = stdcode::serialize(&RawRequest {
+                    proto_ver: PROTO_VER,
+                    netname: netname.to_owned(),
+                    verb: verb.to_owned(),
+                    payload: stdcode::serialize(&req).unwrap(),
+                })
+                .unwrap();
+                write_len_bts(conn.as_mut().as_mut(), &rr).await?;
+                // read the response length
+                let response: RawResponse = stdcode::deserialize(
+                    &read_len_bts(conn.as_mut().as_mut()).await?,
+                )
+                .map_err(|e| {
+                    MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })?;
+                let response = match response.kind.as_ref() {
+                    "Ok" => stdcode::deserialize::<TOutput>(&response.body)
+                        .map_err(|_| MelnetError::Custom("stdcode error".to_owned()))?,
+                    "NoVerb" => return Err(MelnetError::VerbNotFound),
+                    _ => {
+                        return Err(MelnetError::Custom(
+                            String::from_utf8_lossy(&response.body).to_string(),
+                        ))
+                    }
+                };
+                let elapsed = start.elapsed();
+                if elapsed.as_secs_f64() > 3.0 {
+                    log::warn!("melnet req to {} took {:?}", addr, elapsed)
                 }
+                Ok::<_, crate::MelnetError>(response)
             };
-            let elapsed = start.elapsed();
-            if elapsed.as_secs_f64() > 3.0 {
-                log::warn!("melnet req to {} took {:?}", addr, elapsed)
-            }
-            Ok::<_, crate::MelnetError>(response)
-        };
-        match res.await {
-            Err(err) => {
-                Object::take(conn);
-                Err(err)
-            }
-            x => x,
+            return match res.await {
+                Err(err) => Err(err),
+                x => x,
+            };
         }
     }
 }

@@ -12,6 +12,12 @@ pub struct TempTcpStream {
     deadline: Instant,
 }
 
+impl TempTcpStream {
+    pub fn expired(&self) -> bool {
+        self.deadline < Instant::now()
+    }
+}
+
 impl std::ops::Deref for TempTcpStream {
     type Target = TcpStream;
     fn deref(&self) -> &Self::Target {
@@ -41,7 +47,7 @@ impl From<TcpStream> for TempTcpStream {
     fn from(t: TcpStream) -> Self {
         Self {
             tcp: t,
-            deadline: Instant::now() + Duration::from_secs(60),
+            deadline: Instant::now() + Duration::from_secs(10),
         }
     }
 }
