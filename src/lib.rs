@@ -13,20 +13,21 @@ mod endpoint;
 mod pool_manager;
 mod routingtable;
 use anyhow::Context;
+use dashmap::DashMap;
 use derivative::*;
 pub use endpoint::*;
 use once_cell::sync::Lazy;
 use routingtable::*;
 use serde::{de::DeserializeOwned, Serialize};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::{collections::HashMap, net::SocketAddr};
 use tap::TapFallible;
 mod reqs;
 use async_net::{TcpListener, TcpStream};
 mod common;
 pub use client::request;
 pub use common::*;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use rand::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -43,7 +44,7 @@ pub struct NetState {
     network_name: String,
     routes: Arc<RwLock<RoutingTable>>,
     #[derivative(Debug = "ignore")]
-    verbs: Arc<Mutex<HashMap<String, BoxedResponder>>>,
+    verbs: Arc<DashMap<String, BoxedResponder>>,
 }
 
 impl NetState {
@@ -185,7 +186,7 @@ impl NetState {
         log::trace!("got command {:?} from {:?}", cmd, conn.peer_addr());
         // respond to command
         let response_fut = {
-            let responder = self.verbs.lock().get(&cmd.verb).cloned();
+            let responder = self.verbs.get(&cmd.verb);
             if let Some(responder) = responder {
                 let res = responder.0(&cmd.payload);
                 Some(res)
@@ -247,49 +248,45 @@ impl NetState {
     /// Registers the handler for new_peer.
     fn setup_routing(&mut self) {
         // ping just responds to a u64 with itself
-        self.listen("ping", |ping: Request<u64, _>| {
+        self.listen("ping", |ping: Request<u64>| async move {
             let body = ping.body;
-            ping.response.send(Ok(body))
+            Ok(body)
         });
         // new_addr adds a new address
-        self.listen("new_addr", |request: Request<RoutingRequest, _>| {
+        self.listen("new_addr", |request: Request<RoutingRequest>| async move {
             let rr = request.body.clone();
             let state = request.state.clone();
-            let unreach = || MelnetError::Custom(String::from("invalid"));
             if rr.proto != "tcp" {
                 log::debug!("new_addr saw unrecognizable protocol = {:?}", rr.proto);
-                request
-                    .response
-                    .send(Err(MelnetError::Custom("bad protocol".into())));
-                return;
+                anyhow::bail!("bad protocol")
             }
             // move into a task now
-            smolscale::spawn(async move {
-                let their_addr = *smol::net::resolve(&rr.addr).await.ok()?.first()?;
-                let resp: u64 =
-                    crate::request(their_addr, &state.network_name.to_owned(), "ping", 814u64)
-                        .await
-                        .tap_err(|err| log::warn!("error while pinging {}: {:?}", their_addr, err))
-                        .ok()?;
-                if resp != 814 {
-                    log::debug!("new_addr bad ping {:?} {:?}", rr.addr, resp);
-                    request.response.send(Err(unreach()));
-                } else {
-                    let prev_routes = state.routes().len();
-                    state.add_route(*smol::net::resolve(&rr.addr).await.ok()?.first()?);
-                    let new_routes = state.routes().len();
-                    if new_routes > prev_routes {
-                        log::debug!("received route {}; now {} routes", their_addr, new_routes);
-                    }
-                    request.response.send(Ok("".to_string()));
+            let their_addr = *smol::net::resolve(&rr.addr)
+                .await
+                .context("cannot resolve address given")?
+                .first()
+                .context("zero addresses in the hostname given")?;
+            let resp: u64 =
+                crate::request(their_addr, &state.network_name.to_owned(), "ping", 814u64)
+                    .await
+                    .tap_err(|err| log::warn!("error while pinging {}: {:?}", their_addr, err))
+                    .context("remote was unpingable")?;
+            if resp != 814 {
+                log::debug!("new_addr bad ping {:?} {:?}", rr.addr, resp);
+                anyhow::bail!("remote responded to ping corruptly")
+            } else {
+                let prev_routes = state.routes().len();
+                state.add_route(their_addr);
+                let new_routes = state.routes().len();
+                if new_routes > prev_routes {
+                    log::debug!("received route {}; now {} routes", their_addr, new_routes);
                 }
-                Some(())
-            })
-            .detach();
+                Ok::<String, anyhow::Error>("".into())
+            }
         });
         // get_routes dumps out a slice of known routes
-        self.listen("get_routes", |request: Request<(), _>| {
-            request.response.send(Ok(request.state.routes()))
+        self.listen("get_routes", |request: Request<()>| async move {
+            Ok(request.state.routes())
         })
     }
 
@@ -303,9 +300,8 @@ impl NetState {
         verb: &str,
         responder: T,
     ) {
-        self.verbs
-            .lock()
-            .insert(verb.into(), responder_to_closure(self.clone(), responder));
+        let responder = responder_to_closure(self.clone(), responder);
+        self.verbs.insert(verb.into(), responder);
     }
 
     /// Adds a route to the routing table.

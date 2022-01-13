@@ -22,21 +22,24 @@ fn main() -> anyhow::Result<()> {
         let nstate = NetState::new_with_name("gossip");
         let seen_msgs = Arc::new(parking_lot::RwLock::new(HashSet::new()));
         // register the verbs
-        nstate.listen("gossip", move |req: Request<GossipMsg, _>| {
-            println!("received {:?}", req.body);
-            if seen_msgs.read().get(&req.body.id).is_none() {
-                seen_msgs.write().insert(req.body.id);
-                let body = req.body.clone();
-                let state = req.state.clone();
-                // spam to all my neighbors
-                smolscale::spawn(async move {
-                    if let Err(e) = spam_neighbors(&state, body).await {
-                        println!("failed: {}", e);
-                    }
-                })
-                .detach();
+        nstate.listen("gossip", move |req: Request<GossipMsg>| {
+            let seen_msgs = seen_msgs.clone();
+            async move {
+                println!("received {:?}", req.body);
+                if seen_msgs.read().get(&req.body.id).is_none() {
+                    seen_msgs.write().insert(req.body.id);
+                    let body = req.body.clone();
+                    let state = req.state.clone();
+                    // spam to all my neighbors
+                    smolscale::spawn(async move {
+                        if let Err(e) = spam_neighbors(&state, body).await {
+                            println!("failed: {}", e);
+                        }
+                    })
+                    .detach();
+                }
+                Ok(())
             }
-            req.response.send(Ok(()));
         });
         // listen
         nstate
