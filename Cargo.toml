@@ -29,4 +29,4 @@ tap="1"
 once_cell="1"
 deadpool = {version="0.9", default-features=false, features=["managed"]}
 async-trait = "0.1.51"
-dashmap = "5.0.0"
+dashmap = "4"
