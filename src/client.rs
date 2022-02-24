@@ -1,5 +1,6 @@
 use crate::reqs::*;
 use crate::{common::*, pool_manager::TcpPoolManager};
+use async_net::TcpStream;
 use dashmap::DashMap;
 use deadpool::managed::{Object, Pool, PoolError};
 use lazy_static::lazy_static;
@@ -26,39 +27,39 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
 #[derive(Default)]
 pub struct Client {
-    pool: DashMap<SocketAddr, deadpool::managed::Pool<TcpPoolManager>>,
+    // pool: DashMap<SocketAddr, deadpool::managed::Pool<TcpPoolManager>>,
 }
 
 impl Client {
-    /// Connects to a given address, which may return either a new connection or an existing one.
-    async fn connect(&self, addr: impl ToSocketAddrs) -> std::io::Result<Object<TcpPoolManager>> {
-        let addr = addr.to_socket_addrs()?.next().unwrap();
-        let existing = self
-            .pool
-            .entry(addr)
-            .or_insert_with(|| {
-                Pool::builder(TcpPoolManager(addr))
-                    .max_size(64)
-                    .build()
-                    .unwrap()
-            })
-            .clone();
-        loop {
-            let conn = existing.get().await.map_err(|err| match err {
-                PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
-                PoolError::Closed => panic!("closed"),
-                PoolError::NoRuntimeSpecified => panic!("what"),
-                PoolError::Backend(err) => err,
-                PoolError::PostCreateHook(_) => todo!(),
-                PoolError::PreRecycleHook(_) => todo!(),
-                PoolError::PostRecycleHook(_) => todo!(),
-            })?;
-            if conn.expired() {
-                continue;
-            }
-            return Ok(conn);
-        }
-    }
+    // /// Connects to a given address, which may return either a new connection or an existing one.
+    // async fn connect(&self, addr: impl ToSocketAddrs) -> std::io::Result<Object<TcpPoolManager>> {
+    //     let addr = addr.to_socket_addrs()?.next().unwrap();
+    //     let existing = self
+    //         .pool
+    //         .entry(addr)
+    //         .or_insert_with(|| {
+    //             Pool::builder(TcpPoolManager(addr))
+    //                 .max_size(64)
+    //                 .build()
+    //                 .unwrap()
+    //         })
+    //         .clone();
+    //     loop {
+    //         let conn = existing.get().await.map_err(|err| match err {
+    //             PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
+    //             PoolError::Closed => panic!("closed"),
+    //             PoolError::NoRuntimeSpecified => panic!("what"),
+    //             PoolError::Backend(err) => err,
+    //             PoolError::PostCreateHook(_) => todo!(),
+    //             PoolError::PreRecycleHook(_) => todo!(),
+    //             PoolError::PostRecycleHook(_) => todo!(),
+    //         })?;
+    //         if conn.expired() {
+    //             continue;
+    //         }
+    //         return Ok(conn);
+    //     }
+    // }
 
     /// Does a melnet request to any given endpoint.
     pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std::fmt::Debug>(
@@ -97,7 +98,9 @@ impl Client {
         // let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection
-        let mut conn = self.connect(addr).await.map_err(MelnetError::Network)?;
+        let mut conn = TcpStream::connect(addr)
+            .await
+            .map_err(MelnetError::Network)?;
 
         let res = async {
             // send a request
@@ -108,14 +111,12 @@ impl Client {
                 payload: stdcode::serialize(&req).unwrap(),
             })
             .unwrap();
-            write_len_bts(conn.as_mut().as_mut(), &rr).await?;
+            write_len_bts(&mut conn, &rr).await?;
             // read the response length
-            let response: RawResponse = stdcode::deserialize(
-                &read_len_bts(conn.as_mut().as_mut()).await?,
-            )
-            .map_err(|e| {
-                MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-            })?;
+            let response: RawResponse = stdcode::deserialize(&read_len_bts(&mut conn).await?)
+                .map_err(|e| {
+                    MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })?;
             let response = match response.kind.as_ref() {
                 "Ok" => stdcode::deserialize::<TOutput>(&response.body)
                     .map_err(|_| MelnetError::Custom("stdcode error".to_owned()))?,
@@ -132,12 +133,6 @@ impl Client {
             }
             Ok::<_, crate::MelnetError>(response)
         };
-        match res.await {
-            Err(err) => {
-                let _ = Object::take(conn);
-                Err(err)
-            }
-            x => x,
-        }
+        res.await
     }
 }
