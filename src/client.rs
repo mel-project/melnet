@@ -95,7 +95,7 @@ impl Client {
         req: TInput,
     ) -> Result<TOutput> {
         // // Semaphore
-        static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
+        static GLOBAL_LIMIT: Semaphore = Semaphore::new(32);
         let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection
