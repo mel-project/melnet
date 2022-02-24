@@ -6,6 +6,7 @@ use deadpool::managed::{Object, Pool, PoolError};
 use lazy_static::lazy_static;
 
 use serde::{de::DeserializeOwned, Serialize};
+use smol::lock::Semaphore;
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -94,8 +95,8 @@ impl Client {
         req: TInput,
     ) -> Result<TOutput> {
         // // Semaphore
-        // static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
-        // let _guard = GLOBAL_LIMIT.acquire().await;
+        static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
+        let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection
         let mut conn = TcpStream::connect(addr)
