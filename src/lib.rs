@@ -160,7 +160,14 @@ impl NetState {
     async fn server_handle(&self, mut conn: TcpStream) -> anyhow::Result<()> {
         conn.set_nodelay(true)?;
         loop {
-            self.server_handle_one(&mut conn).await?;
+            if let Err(err) = self.server_handle_one(&mut conn).await {
+                log::debug!(
+                    "connection from {:?} died in error {:?}",
+                    conn.peer_addr(),
+                    err
+                );
+                return Err(err);
+            }
         }
     }
 
@@ -179,7 +186,7 @@ impl NetState {
         if cmd.netname != self.network_name {
             return Err(anyhow::anyhow!("bad"));
         }
-        log::trace!("got command {:?} from {:?}", cmd, conn.peer_addr());
+        log::trace!("got command {:?} from {:?}", cmd.verb, conn.peer_addr());
         // respond to command
         let response_fut = {
             let responder = self.verbs.get(&cmd.verb);
