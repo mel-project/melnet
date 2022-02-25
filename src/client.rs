@@ -1,14 +1,14 @@
+use crate::common::*;
+
 use crate::reqs::*;
-use crate::{common::*, pool_manager::TcpPoolManager};
 use async_net::TcpStream;
-use dashmap::DashMap;
-use deadpool::managed::{Object, Pool, PoolError};
+
 use lazy_static::lazy_static;
 
 use serde::{de::DeserializeOwned, Serialize};
 use smol::lock::Semaphore;
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 lazy_static! {
@@ -95,7 +95,7 @@ impl Client {
         req: TInput,
     ) -> Result<TOutput> {
         // // Semaphore
-        static GLOBAL_LIMIT: Semaphore = Semaphore::new(32);
+        static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
         let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection

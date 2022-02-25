@@ -58,10 +58,7 @@ impl NetState {
         // Max number of connections
         spammer
             .race(async move {
-                static CONN_SEMAPHORE: Lazy<smol::lock::Semaphore> =
-                    Lazy::new(|| smol::lock::Semaphore::new(512));
                 loop {
-                    let sem_guard = CONN_SEMAPHORE.acquire().await;
                     let (conn, addr) = listener.accept().await.unwrap();
                     let self_copy = self.clone();
                     // spawn a task, moving the sem_guard inside
@@ -73,7 +70,6 @@ impl NetState {
                         {
                             log::debug!("{} terminating on error: {:?}", addr, e)
                         }
-                        drop(sem_guard);
                     })
                     .detach();
                 }
