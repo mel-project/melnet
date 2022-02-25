@@ -21,6 +21,7 @@ pub const PROTO_VER: u8 = 1;
 pub const MAX_MSG_SIZE: u32 = 10 * 1024 * 1024;
 
 pub async fn write_len_bts<T: AsyncWrite + Unpin>(mut conn: T, rr: &[u8]) -> Result<()> {
+    debug_assert!(rr.len() < MAX_MSG_SIZE as usize);
     conn.write_all(&(rr.len() as u32).to_be_bytes())
         .await
         .map_err(MelnetError::Network)?;
