@@ -1,8 +1,9 @@
-use crate::common::*;
+use crate::{common::*, tcp_pool::TcpPool};
 
 use crate::reqs::*;
 use async_net::TcpStream;
 
+use dashmap::DashMap;
 use lazy_static::lazy_static;
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -28,40 +29,10 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
 #[derive(Default)]
 pub struct Client {
-    // pool: DashMap<SocketAddr, deadpool::managed::Pool<TcpPoolManager>>,
+    pool: DashMap<SocketAddr, TcpPool>,
 }
 
 impl Client {
-    // /// Connects to a given address, which may return either a new connection or an existing one.
-    // async fn connect(&self, addr: impl ToSocketAddrs) -> std::io::Result<Object<TcpPoolManager>> {
-    //     let addr = addr.to_socket_addrs()?.next().unwrap();
-    //     let existing = self
-    //         .pool
-    //         .entry(addr)
-    //         .or_insert_with(|| {
-    //             Pool::builder(TcpPoolManager(addr))
-    //                 .max_size(64)
-    //                 .build()
-    //                 .unwrap()
-    //         })
-    //         .clone();
-    //     loop {
-    //         let conn = existing.get().await.map_err(|err| match err {
-    //             PoolError::Timeout(_) => panic!("should never see deadpool timeout"),
-    //             PoolError::Closed => panic!("closed"),
-    //             PoolError::NoRuntimeSpecified => panic!("what"),
-    //             PoolError::Backend(err) => err,
-    //             PoolError::PostCreateHook(_) => todo!(),
-    //             PoolError::PreRecycleHook(_) => todo!(),
-    //             PoolError::PostRecycleHook(_) => todo!(),
-    //         })?;
-    //         if conn.expired() {
-    //             continue;
-    //         }
-    //         return Ok(conn);
-    //     }
-    // }
-
     /// Does a melnet request to any given endpoint.
     pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std::fmt::Debug>(
         &self,
@@ -99,7 +70,11 @@ impl Client {
         let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
         // grab a connection
-        let mut conn = TcpStream::connect(addr)
+        let mut conn = self
+            .pool
+            .entry(addr)
+            .or_insert_with(|| TcpPool::new(32, Duration::from_secs(5), addr))
+            .connect()
             .await
             .map_err(MelnetError::Network)?;
 

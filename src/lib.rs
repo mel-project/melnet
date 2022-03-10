@@ -10,13 +10,12 @@
 
 mod client;
 mod endpoint;
-mod pool_manager;
 mod routingtable;
+mod tcp_pool;
 use anyhow::Context;
 use dashmap::DashMap;
 use derivative::*;
 pub use endpoint::*;
-use once_cell::sync::Lazy;
 use routingtable::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::net::SocketAddr;
@@ -63,11 +62,7 @@ impl NetState {
                     let self_copy = self.clone();
                     // spawn a task, moving the sem_guard inside
                     smolscale::spawn(async move {
-                        if let Some(Err(e)) = self_copy
-                            .server_handle(conn)
-                            .timeout(Duration::from_secs(120))
-                            .await
-                        {
+                        if let Err(e) = self_copy.server_handle(conn).await {
                             log::debug!("{} terminating on error: {:?}", addr, e)
                         }
                     })
@@ -160,13 +155,21 @@ impl NetState {
     async fn server_handle(&self, mut conn: TcpStream) -> anyhow::Result<()> {
         conn.set_nodelay(true)?;
         loop {
-            if let Err(err) = self.server_handle_one(&mut conn).await {
-                log::debug!(
-                    "connection from {:?} died in error {:?}",
-                    conn.peer_addr(),
-                    err
-                );
-                return Err(err);
+            match self
+                .server_handle_one(&mut conn)
+                .timeout(Duration::from_secs(60))
+                .await
+            {
+                Some(Err(err)) => {
+                    log::debug!(
+                        "connection from {:?} died in error {:?}",
+                        conn.peer_addr(),
+                        err
+                    );
+                    return Err(err);
+                }
+                Some(Ok(_)) => {}
+                None => anyhow::bail!("timeout"),
             }
         }
     }
