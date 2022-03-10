@@ -34,7 +34,7 @@ impl TcpPool {
     }
 
     /// Returns this TCP connection to the pool.
-    pub async fn replenish(&self, conn: TcpStream) {
+    pub fn replenish(&self, conn: TcpStream) {
         if self.send_conn.try_send(conn).is_ok() {
             let recv_conn = self.recv_conn.clone();
             let timeout = self.timeout;

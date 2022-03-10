@@ -69,15 +69,13 @@ impl Client {
         static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
         let _guard = GLOBAL_LIMIT.acquire().await;
         let start = Instant::now();
-        // grab a connection
-        let mut conn = self
+        let pool = self
             .pool
             .entry(addr)
             .or_insert_with(|| TcpPool::new(32, Duration::from_secs(5), addr).into())
-            .clone()
-            .connect()
-            .await
-            .map_err(MelnetError::Network)?;
+            .clone();
+        // grab a connection
+        let mut conn = pool.connect().await.map_err(MelnetError::Network)?;
 
         let res = async {
             // send a request
@@ -114,6 +112,7 @@ impl Client {
                     elapsed
                 )
             }
+            self.pool.get(&addr).unwrap().replenish(conn);
             Ok::<_, crate::MelnetError>(response)
         };
         res.await
