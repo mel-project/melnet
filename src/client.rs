@@ -9,8 +9,8 @@ use lazy_static::lazy_static;
 use serde::{de::DeserializeOwned, Serialize};
 use smol::lock::Semaphore;
 
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
+use std::{net::SocketAddr, sync::Arc};
 
 lazy_static! {
     static ref CONN_POOL: Client = Client::default();
@@ -29,7 +29,7 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
 #[derive(Default)]
 pub struct Client {
-    pool: DashMap<SocketAddr, TcpPool>,
+    pool: DashMap<SocketAddr, Arc<TcpPool>>,
 }
 
 impl Client {
@@ -73,7 +73,8 @@ impl Client {
         let mut conn = self
             .pool
             .entry(addr)
-            .or_insert_with(|| TcpPool::new(32, Duration::from_secs(5), addr))
+            .or_insert_with(|| TcpPool::new(32, Duration::from_secs(5), addr).into())
+            .clone()
             .connect()
             .await
             .map_err(MelnetError::Network)?;
