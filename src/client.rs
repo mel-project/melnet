@@ -105,7 +105,13 @@ impl Client {
             };
             let elapsed = start.elapsed();
             if elapsed.as_secs_f64() > 3.0 {
-                log::warn!("melnet req to {} took {:?}", addr, elapsed)
+                log::warn!(
+                    "melnet req of verb {}/{} to {} took {:?}",
+                    netname,
+                    verb,
+                    addr,
+                    elapsed
+                )
             }
             Ok::<_, crate::MelnetError>(response)
         };
