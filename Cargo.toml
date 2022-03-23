@@ -1,6 +1,6 @@
 [package]
 name = "melnet"
-version = "0.2.16-alpha.0"
+version = "0.2.16"
 authors = ["Themelio Labs"]
 edition = "2018"
 
