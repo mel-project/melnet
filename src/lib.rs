@@ -123,26 +123,30 @@ impl NetState {
                     })??;
                     log::debug!("{} routes from {}", resp.len(), route);
                     for new_route in resp {
-                        log::debug!("testing {}", new_route);
                         let state = state.clone();
                         let network_name = network_name.clone();
-                        smolscale::spawn(async move {
-                            crate::request::<_, u64>(new_route, &network_name, "ping", 10)
-                                .timeout(Duration::from_secs(10))
-                                .await
-                                .context("timeout")
-                                .tap_err(|err| {
-                                    log::warn!(
-                                        "route {} from {} was unpingable ({:?})!",
-                                        new_route,
-                                        route,
-                                        err
-                                    )
-                                })??;
-                            state.add_route(new_route);
-                            Ok::<_, anyhow::Error>(())
-                        })
-                        .detach();
+                        if let Some(age) = state.get_route_age(new_route) {
+                            log::debug!("NEW route {} from {}", new_route, route);
+                            if age.as_secs_f64() > 600.0 {
+                                smolscale::spawn(async move {
+                                    crate::request::<_, u64>(new_route, &network_name, "ping", 10)
+                                        .timeout(Duration::from_secs(10))
+                                        .await
+                                        .context("timeout")
+                                        .tap_err(|err| {
+                                            log::warn!(
+                                                "route {} from {} was unpingable ({:?})!",
+                                                new_route,
+                                                route,
+                                                err
+                                            )
+                                        })??;
+                                    state.add_route(new_route);
+                                    Ok::<_, anyhow::Error>(())
+                                })
+                                .detach();
+                            }
+                        }
                     }
                     Ok::<_, anyhow::Error>(())
                 })
@@ -313,6 +317,11 @@ impl NetState {
     /// Adds a route to the routing table.
     pub fn add_route(&self, addr: SocketAddr) {
         self.routes.write().add_route(addr)
+    }
+
+    /// Gets route age.
+    pub fn get_route_age(&self, addr: SocketAddr) -> Option<Duration> {
+        self.routes.read().get_route_age(addr)
     }
 
     /// Obtains a vector of routes. This is guaranteed to be uniformly shuffled, so taking the first N elements is always fair.

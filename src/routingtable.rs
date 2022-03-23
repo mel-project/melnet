@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Instant;
+use std::{collections::HashMap, time::Duration};
 
 #[derive(Debug, Default)]
 pub struct RoutingTable {
@@ -13,6 +13,11 @@ impl RoutingTable {
         log::trace!("add route {}", addr);
         self.clean_up();
         self.addr_last_seen.insert(addr, Instant::now());
+    }
+
+    /// Gets the age of a route, if available
+    pub fn get_route_age(&self, addr: SocketAddr) -> Option<Duration> {
+        self.addr_last_seen.get(&addr).map(|d| d.elapsed())
     }
 
     /// Cleans up really old routes.
