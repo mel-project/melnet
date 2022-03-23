@@ -141,7 +141,7 @@ impl NetState {
         let must_refresh = if let Some(age) = self.get_route_age(new_route) {
             age.as_secs_f64() > 600.0
         } else {
-            false
+            true
         };
         if must_refresh {
             log::debug!("NEW route {} from ", new_route);
