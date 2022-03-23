@@ -75,7 +75,7 @@ impl NetState {
     /// Random spammer
     async fn new_addr_spam(&self) {
         let mut rng = rand::rngs::OsRng {};
-        let mut tmr = Timer::interval(Duration::from_secs(30));
+        let mut tmr = Timer::interval(Duration::from_secs(1));
         loop {
             tmr.next().await;
             let routes = self.routes.read().to_vec();
@@ -103,7 +103,7 @@ impl NetState {
 
     /// Get-routes spam
     async fn get_routes_spam(&self) {
-        let mut tmr = Timer::interval(Duration::from_secs(10));
+        let mut tmr = Timer::interval(Duration::from_secs(30));
         loop {
             if let Some(route) = self.routes().get(0).copied() {
                 let network_name = self.network_name.clone();
@@ -123,36 +123,34 @@ impl NetState {
                     })??;
                     log::debug!("{} routes from {}", resp.len(), route);
                     for new_route in resp {
-                        let state = state.clone();
-                        let network_name = network_name.clone();
-                        if let Some(age) = state.get_route_age(new_route) {
-                            log::debug!("NEW route {} from {}", new_route, route);
-                            if age.as_secs_f64() > 600.0 {
-                                smolscale::spawn(async move {
-                                    crate::request::<_, u64>(new_route, &network_name, "ping", 10)
-                                        .timeout(Duration::from_secs(10))
-                                        .await
-                                        .context("timeout")
-                                        .tap_err(|err| {
-                                            log::warn!(
-                                                "route {} from {} was unpingable ({:?})!",
-                                                new_route,
-                                                route,
-                                                err
-                                            )
-                                        })??;
-                                    state.add_route(new_route);
-                                    Ok::<_, anyhow::Error>(())
-                                })
-                                .detach();
-                            }
-                        }
+                        state.handle_new_route(new_route)
                     }
                     Ok::<_, anyhow::Error>(())
                 })
                 .detach();
             }
             tmr.next().await;
+        }
+    }
+
+    fn handle_new_route(&self, new_route: SocketAddr) {
+        if let Some(age) = self.get_route_age(new_route) {
+            log::debug!("NEW route {} from ", new_route);
+            if age.as_secs_f64() > 600.0 {
+                let this = self.clone();
+                smolscale::spawn(async move {
+                    crate::request::<_, u64>(new_route, &this.network_name, "ping", 10)
+                        .timeout(Duration::from_secs(10))
+                        .await
+                        .context("timeout")
+                        .tap_err(|err| {
+                            log::warn!("route {} was unpingable ({:?})!", new_route, err)
+                        })??;
+                    this.add_route(new_route);
+                    Ok::<_, anyhow::Error>(())
+                })
+                .detach();
+            }
         }
     }
 
@@ -270,29 +268,8 @@ impl NetState {
                 log::debug!("new_addr saw unrecognizable protocol = {:?}", rr.proto);
                 anyhow::bail!("bad protocol")
             }
-            // move into a task now
-            let their_addr = *smol::net::resolve(&rr.addr)
-                .await
-                .context("cannot resolve address given")?
-                .first()
-                .context("zero addresses in the hostname given")?;
-            let resp: u64 =
-                crate::request(their_addr, &state.network_name.to_owned(), "ping", 814u64)
-                    .await
-                    .tap_err(|err| log::warn!("error while pinging {}: {:?}", their_addr, err))
-                    .context("remote was unpingable")?;
-            if resp != 814 {
-                log::debug!("new_addr bad ping {:?} {:?}", rr.addr, resp);
-                anyhow::bail!("remote responded to ping corruptly")
-            } else {
-                let prev_routes = state.routes().len();
-                state.add_route(their_addr);
-                let new_routes = state.routes().len();
-                if new_routes > prev_routes {
-                    log::debug!("received route {}; now {} routes", their_addr, new_routes);
-                }
-                Ok::<String, anyhow::Error>("".into())
-            }
+            state.handle_new_route(request.body.addr.parse()?);
+            Ok("".to_string())
         });
         // get_routes dumps out a slice of known routes
         self.listen("get_routes", |request: Request<()>| async move {
