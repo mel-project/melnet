@@ -161,7 +161,7 @@ impl NetState {
                 .await
             {
                 Some(Err(err)) => {
-                    log::debug!(
+                    log::trace!(
                         "connection from {:?} died in error {:?}",
                         conn.peer_addr(),
                         err
