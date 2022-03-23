@@ -82,7 +82,11 @@ impl NetState {
             if !routes.is_empty() {
                 let (rand_neigh, _) = routes[rng.gen::<usize>() % routes.len()];
                 let (rand_route, _) = routes[rng.gen::<usize>() % routes.len()];
+                if rand_neigh == rand_route {
+                    continue;
+                }
                 let network_name = self.network_name.clone();
+                log::debug!("sending new_addr {} to {}", rand_neigh, rand_route);
                 smolscale::spawn(async move {
                     let _ = crate::request::<RoutingRequest, String>(
                         rand_neigh,
