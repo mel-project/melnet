@@ -63,7 +63,7 @@ impl NetState {
                     // spawn a task, moving the sem_guard inside
                     smolscale::spawn(async move {
                         if let Err(e) = self_copy.server_handle(conn).await {
-                            log::debug!("{} terminating on error: {:?}", addr, e)
+                            log::trace!("{} terminating on error: {:?}", addr, e)
                         }
                     })
                     .detach();
