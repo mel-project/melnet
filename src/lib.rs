@@ -125,7 +125,7 @@ impl NetState {
                     .tap_err(|err| {
                         log::debug!("could not get routes from {}: {:?}", route, err)
                     })??;
-                    log::debug!("{} routes from {}", resp.len(), route);
+                    log::debug!("{} routes from {}: {:?}", resp.len(), route, resp);
                     for new_route in resp {
                         state.handle_new_route(new_route)
                     }
@@ -138,23 +138,26 @@ impl NetState {
     }
 
     fn handle_new_route(&self, new_route: SocketAddr) {
-        if let Some(age) = self.get_route_age(new_route) {
-            if age.as_secs_f64() > 600.0 {
-                log::debug!("NEW route {} from ", new_route);
-                let this = self.clone();
-                smolscale::spawn(async move {
-                    crate::request::<_, u64>(new_route, &this.network_name, "ping", 10)
-                        .timeout(Duration::from_secs(10))
-                        .await
-                        .context("timeout")
-                        .tap_err(|err| {
-                            log::warn!("route {} was unpingable ({:?})!", new_route, err)
-                        })??;
-                    this.add_route(new_route);
-                    Ok::<_, anyhow::Error>(())
-                })
-                .detach();
-            }
+        let must_refresh = if let Some(age) = self.get_route_age(new_route) {
+            age.as_secs_f64() > 600.0
+        } else {
+            false
+        };
+        if must_refresh {
+            log::debug!("NEW route {} from ", new_route);
+            let this = self.clone();
+            smolscale::spawn(async move {
+                crate::request::<_, u64>(new_route, &this.network_name, "ping", 10)
+                    .timeout(Duration::from_secs(10))
+                    .await
+                    .context("timeout")
+                    .tap_err(|err| {
+                        log::warn!("route {} was unpingable ({:?})!", new_route, err)
+                    })??;
+                this.add_route(new_route);
+                Ok::<_, anyhow::Error>(())
+            })
+            .detach();
         }
     }
 
