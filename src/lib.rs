@@ -135,8 +135,8 @@ impl NetState {
 
     fn handle_new_route(&self, new_route: SocketAddr) {
         if let Some(age) = self.get_route_age(new_route) {
-            log::debug!("NEW route {} from ", new_route);
             if age.as_secs_f64() > 600.0 {
+                log::debug!("NEW route {} from ", new_route);
                 let this = self.clone();
                 smolscale::spawn(async move {
                     crate::request::<_, u64>(new_route, &this.network_name, "ping", 10)
