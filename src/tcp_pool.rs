@@ -26,10 +26,7 @@ impl TcpPool {
     /// Gets a connection from the pool, or fails if the pool is empty.
     pub async fn connect(&self) -> std::io::Result<TcpStream> {
         let in_pool = async { Ok(self.recv_conn.recv().await.unwrap()) };
-        let new_conn = async {
-            smol::Timer::after(Duration::from_millis(5)).await;
-            TcpStream::connect(self.destination).await
-        };
+        let new_conn = async { TcpStream::connect(self.destination).await };
         in_pool.or(new_conn).await
     }
 
