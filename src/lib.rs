@@ -10,12 +10,14 @@
 
 mod client;
 mod endpoint;
+mod reptracker;
 mod routingtable;
 mod tcp_pool;
 use anyhow::Context;
 use dashmap::DashMap;
 use derivative::*;
 pub use endpoint::*;
+use reptracker::RepTracker;
 use routingtable::*;
 use serde::{de::DeserializeOwned, Serialize};
 use std::net::SocketAddr;
@@ -44,6 +46,10 @@ pub struct NetState {
     routes: Arc<RwLock<RoutingTable>>,
     #[derivative(Debug = "ignore")]
     verbs: Arc<DashMap<String, BoxedResponder>>,
+
+    // reputations. Bad-reputation nodes get blacklisted
+    #[derivative(Debug = "ignore")]
+    reputations: Arc<DashMap<SocketAddr, RepTracker>>,
 }
 
 impl NetState {
@@ -138,6 +144,15 @@ impl NetState {
     }
 
     fn handle_new_route(&self, new_route: SocketAddr) {
+        let rep = self
+            .reputations
+            .entry(new_route)
+            .or_default()
+            .get_reputation();
+        if rep < -5.0 {
+            log::warn!("rejecting {} due to low reputation {:.1}", new_route, rep);
+            return;
+        }
         let must_refresh = if let Some(age) = self.get_route_age(new_route) {
             age.as_secs_f64() > 600.0
         } else {
@@ -146,14 +161,17 @@ impl NetState {
         if must_refresh {
             log::debug!("NEW route {} from ", new_route);
             let this = self.clone();
+            let reputations = self.reputations.clone();
             smolscale::spawn(async move {
+                reputations.entry(new_route).or_default().delta(-1.0);
                 crate::request::<_, u64>(new_route, &this.network_name, "ping", 10)
-                    .timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(3))
                     .await
                     .context("timeout")
                     .tap_err(|err| {
                         log::warn!("route {} was unpingable ({:?})!", new_route, err)
                     })??;
+                reputations.entry(new_route).or_default().delta(2.0);
                 this.add_route(new_route);
                 Ok::<_, anyhow::Error>(())
             })
@@ -311,6 +329,13 @@ impl NetState {
     /// Obtains a vector of routes. This is guaranteed to be uniformly shuffled, so taking the first N elements is always fair.
     pub fn routes(&self) -> Vec<SocketAddr> {
         let mut rr: Vec<SocketAddr> = self.routes.read().to_vec().iter().map(|v| v.0).collect();
+        rr.retain(|v| {
+            if let Some(v) = self.reputations.get(v) {
+                v.value().get_reputation() > -5.0
+            } else {
+                true
+            }
+        });
         rr.shuffle(&mut thread_rng());
         rr
     }
