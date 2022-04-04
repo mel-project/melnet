@@ -93,6 +93,7 @@ impl NetState {
                 }
                 let network_name = self.network_name.clone();
                 log::debug!("sending new_addr {} to {}", rand_neigh, rand_route);
+                let reputations = self.reputations.clone();
                 smolscale::spawn(async move {
                     let _ = crate::request::<RoutingRequest, String>(
                         rand_neigh,
@@ -104,7 +105,10 @@ impl NetState {
                         },
                     )
                     .await
-                    .tap_err(|err| log::debug!("addrspam failed to {} ({:?})", rand_neigh, err));
+                    .tap_err(|err| {
+                        reputations.entry(rand_neigh).or_default().delta(-3.0);
+                        log::debug!("addrspam failed to {} ({:?})", rand_neigh, err);
+                    });
                 })
                 .detach();
             }
@@ -118,7 +122,9 @@ impl NetState {
             if let Some(route) = self.routes().get(0).copied() {
                 let network_name = self.network_name.clone();
                 let state = self.clone();
+                let reputations = self.reputations.clone();
                 smolscale::spawn(async move {
+                    reputations.entry(route).or_default().delta(-1.0);
                     let resp: Vec<SocketAddr> = crate::request::<(), Vec<SocketAddr>>(
                         route,
                         &network_name,
@@ -135,6 +141,7 @@ impl NetState {
                     for new_route in resp {
                         state.handle_new_route(new_route)
                     }
+                    reputations.entry(route).or_default().delta(1.0);
                     Ok::<_, anyhow::Error>(())
                 })
                 .detach();

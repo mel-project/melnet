@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 
 use serde::{de::DeserializeOwned, Serialize};
 use smol::lock::Semaphore;
+use smol_timeout::TimeoutExt;
 
 use std::time::{Duration, Instant};
 use std::{net::SocketAddr, sync::Arc};
@@ -23,7 +24,17 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
     verb: &str,
     req: TInput,
 ) -> Result<TOutput> {
-    CONN_POOL.request(addr, netname, verb, req).await
+    match CONN_POOL
+        .request(addr, netname, verb, req)
+        .timeout(Duration::from_secs(60))
+        .await
+    {
+        Some(v) => v,
+        None => Err(MelnetError::Network(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "long timeout at 60 seconds",
+        ))),
+    }
 }
 
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
