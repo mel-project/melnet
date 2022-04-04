@@ -25,6 +25,7 @@ impl RepTracker {
     pub fn delta(&mut self, rep: f64) {
         if self.reputation < 20.0 {
             self.reputation += rep;
+            self.last_update = Instant::now();
         }
     }
 
