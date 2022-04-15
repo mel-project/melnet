@@ -78,7 +78,9 @@ impl Client {
     ) -> Result<TOutput> {
         // // Semaphore
         static GLOBAL_LIMIT: Semaphore = Semaphore::new(128);
+        let start = Instant::now();
         let _guard = GLOBAL_LIMIT.acquire().await;
+        log::debug!("acquired semaphore by {:?}", start.elapsed());
         let start = Instant::now();
         let pool = self
             .pool
@@ -87,6 +89,7 @@ impl Client {
             .clone();
         // grab a connection
         let mut conn = pool.connect().await.map_err(MelnetError::Network)?;
+        log::debug!("acquired connection by {:?}", start.elapsed());
 
         let res = async {
             // send a request
