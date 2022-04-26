@@ -77,7 +77,7 @@ impl Client {
         req: TInput,
     ) -> Result<TOutput> {
         // // Semaphore
-        static GLOBAL_LIMIT: Semaphore = Semaphore::new(2048);
+        static GLOBAL_LIMIT: Semaphore = Semaphore::new(256);
         let start = Instant::now();
         let _guard = GLOBAL_LIMIT.acquire().await;
         log::debug!("acquired semaphore by {:?}", start.elapsed());
