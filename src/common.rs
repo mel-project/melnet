@@ -1,5 +1,5 @@
 use smol::prelude::*;
-use std::pin::Pin;
+use std::{pin::Pin};
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, MelnetError>;
@@ -15,6 +15,19 @@ pub enum MelnetError {
     InternalServerError,
     #[error("network error: `{0}`")]
     Network(std::io::Error),
+}
+
+impl Clone for MelnetError {
+    fn clone(&self) -> Self {
+        match self {
+            MelnetError::Custom(s) => MelnetError::Custom(s.clone()),
+            MelnetError::VerbNotFound => MelnetError::VerbNotFound,
+            MelnetError::InternalServerError => MelnetError::InternalServerError,
+            MelnetError::Network(err) => {
+                MelnetError::Network(std::io::Error::new(err.kind(), err.to_string()))
+            }
+        }
+    }
 }
 
 pub const PROTO_VER: u8 = 1;

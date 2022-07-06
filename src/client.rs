@@ -1,8 +1,8 @@
-use crate::{common::*, tcp_pool::TcpPool};
+use crate::{common::*, pipeline::Pipeline};
 
 use crate::reqs::*;
-use async_net::TcpStream;
 
+use async_net::TcpStream;
 use dashmap::DashMap;
 use lazy_static::lazy_static;
 
@@ -10,8 +10,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use smol::lock::Semaphore;
 use smol_timeout::TimeoutExt;
 
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use std::{net::SocketAddr, sync::Arc};
 
 lazy_static! {
     static ref CONN_POOL: Client = Client::default();
@@ -37,10 +37,12 @@ pub async fn request<TInput: Serialize + Clone, TOutput: DeserializeOwned + std:
     }
 }
 
+const POOL_SIZE: usize = 4;
+
 /// Implements a thread-safe pool of connections to melnet, or any HTTP/1.1-style keepalive protocol, servers.
 #[derive(Default)]
 pub struct Client {
-    pool: DashMap<SocketAddr, Arc<TcpPool>>,
+    pool: [DashMap<SocketAddr, (Pipeline, Instant)>; POOL_SIZE],
 }
 
 impl Client {
@@ -82,13 +84,17 @@ impl Client {
         let _guard = GLOBAL_LIMIT.acquire().await;
         log::debug!("acquired semaphore by {:?}", start.elapsed());
         let start = Instant::now();
-        let pool = self
-            .pool
-            .entry(addr)
-            .or_insert_with(|| TcpPool::new(32, Duration::from_secs(5), addr).into())
-            .clone();
-        // grab a connection
-        let mut conn = pool.connect().await.map_err(MelnetError::Network)?;
+        let pool = &self.pool[fastrand::usize(0..self.pool.len())];
+        let conn = if let Some(v) = pool.get(&addr).filter(|d| d.1.elapsed().as_secs() < 60) {
+            v.0.clone()
+        } else {
+            let t = TcpStream::connect(addr)
+                .await
+                .map_err(MelnetError::Network)?;
+            let pipe = Pipeline::new(t);
+            pool.insert(addr, (pipe.clone(), Instant::now()));
+            pipe
+        };
         log::debug!("acquired connection by {:?}", start.elapsed());
 
         let res = async {
@@ -100,10 +106,9 @@ impl Client {
                 payload: stdcode::serialize(&req).unwrap(),
             })
             .unwrap();
-            write_len_bts(&mut conn, &rr).await?;
             // read the response length
-            let response: RawResponse = stdcode::deserialize(&read_len_bts(&mut conn).await?)
-                .map_err(|e| {
+            let response: RawResponse =
+                stdcode::deserialize(&conn.request(rr).await?).map_err(|e| {
                     MelnetError::Network(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
                 })?;
             let response = match response.kind.as_ref() {
@@ -126,9 +131,14 @@ impl Client {
                     elapsed
                 )
             }
-            self.pool.get(&addr).unwrap().replenish(conn);
             Ok::<_, crate::MelnetError>(response)
         };
-        res.await
+        match res.await {
+            Ok(v) => Ok(v),
+            Err(err) => {
+                pool.remove(&addr);
+                Err(err)
+            }
+        }
     }
 }

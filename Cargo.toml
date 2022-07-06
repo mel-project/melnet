@@ -1,6 +1,6 @@
 [package]
 name = "melnet"
-version = "0.2.26"
+version = "0.2.27"
 authors = ["Themelio Labs"]
 edition = "2018"
 
@@ -32,3 +32,6 @@ async-trait = "0.1.51"
 dashmap = "4"
 futures-util = "0.3.21"
 async-recursion = "1.0.0"
+concurrent-queue = "1.2.2"
+fastrand = "1.7.0"
+# crossbeam-queue = "0.3.5"

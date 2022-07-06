@@ -3,7 +3,6 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use melnet::{NetState, Request};
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
-use smol::prelude::*;
 
 static EXEC: smol::Executor = smol::Executor::new();
 
@@ -41,11 +40,9 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }
         });
+        nstate.start_server(tcp_listener);
         // listen
-        nstate
-            .run_server(tcp_listener)
-            .or(cmd_prompt(&nstate))
-            .await;
+        cmd_prompt(&nstate).await;
         Ok(())
     }))
 }

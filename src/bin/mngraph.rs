@@ -52,7 +52,7 @@ async fn explore(
         children.push(explore(route, netname, accum));
     }
     while let Some(val) = children.next().await {
-        if let Err(err) = val {
+        if let Err(_err) = val {
             // eprintln!("encountered an error: {:?}", err)
         }
     }

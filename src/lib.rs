@@ -10,9 +10,9 @@
 
 mod client;
 mod endpoint;
+mod pipeline;
 mod reptracker;
 mod routingtable;
-mod tcp_pool;
 use anyhow::Context;
 use dashmap::DashMap;
 use derivative::*;
@@ -28,13 +28,13 @@ use async_net::{TcpListener, TcpStream};
 mod common;
 pub use client::request;
 pub use common::*;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rand::prelude::*;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use reqs::*;
-use smol::prelude::*;
 use smol::Timer;
+use smol::{prelude::*, Task};
 use smol_timeout::TimeoutExt;
 use std::time::Duration;
 
@@ -50,32 +50,46 @@ pub struct NetState {
     // reputations. Bad-reputation nodes get blacklisted
     #[derivative(Debug = "ignore")]
     reputations: Arc<DashMap<SocketAddr, RepTracker>>,
+
+    // Slot for the optional server task
+    _server_task: Arc<Mutex<Option<Task<()>>>>,
 }
 
 impl NetState {
-    /// Runs the netstate. Usually you would want to call this in a separate task. This doesn't consume the netstate because the netstate struct can still be used to get out routes, register new verbs, etc even when it's concurrently run as a server.
-    pub async fn run_server(&self, listener: TcpListener) {
+    /// Starts the netstate in the background. This doesn't consume the netstate because the netstate struct can still be used to get out routes, register new verbs, etc even when it's concurrently run as a server.
+    pub fn start_server(&self, listener: TcpListener) {
         let mut this = self.clone();
         this.setup_routing();
         // Spam neighbors with random routes
-        let spammer = self.new_addr_spam().race(self.get_routes_spam());
 
         // Max number of connections
-        spammer
-            .race(async move {
-                loop {
-                    let (conn, addr) = listener.accept().await.unwrap();
-                    let self_copy = self.clone();
-                    // spawn a task, moving the sem_guard inside
-                    smolscale::spawn(async move {
-                        if let Err(e) = self_copy.server_handle(conn).await {
-                            log::trace!("{} terminating on error: {:?}", addr, e)
-                        }
-                    })
-                    .detach();
-                }
-            })
-            .await
+        let this = self.clone();
+        let task = smolscale::spawn(async move {
+            let _spammer = {
+                let this = this.clone();
+                smolscale::spawn(
+                    async move { this.new_addr_spam().race(this.get_routes_spam()).await },
+                )
+            };
+            loop {
+                let (conn, addr) = listener.accept().await.unwrap();
+                // spawn a task, moving the sem_guard inside
+                let this = this.clone();
+                smolscale::spawn(async move {
+                    if let Err(e) = this.server_handle(conn).await {
+                        log::trace!("{} terminating on error: {:?}", addr, e)
+                    }
+                })
+                .detach();
+            }
+        });
+        *self._server_task.lock() = Some(task);
+    }
+
+    #[deprecated]
+    pub async fn run_server(&self, listener: TcpListener) {
+        self.start_server(listener);
+        smol::future::pending().await
     }
 
     /// Random spammer
